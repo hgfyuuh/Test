@@ -1,0 +1,333 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
+local Camera = workspace.CurrentCamera
+
+-- Clean up previous execution
+local oldGui = PlayerGui:FindFirstChild("NEVERBLOX_ESP_ONLY")
+if oldGui then
+	oldGui:Destroy()
+end
+
+local Theme = {
+	Accent = Color3.fromRGB(39, 156, 255),
+	Text = Color3.fromRGB(255, 255, 255),
+	Red = Color3.fromRGB(255, 75, 85),
+	Green = Color3.fromRGB(70, 255, 145)
+}
+
+local State = {
+	VisualsEnabled = false,
+	TeamCheck = false,
+	BoxESP = false,
+	CornerBox = false,
+	NameESP = false,
+	HealthESP = false,
+	DistanceESP = false,
+	Chams = false,
+	Glow = false,
+	ChamsXRay = false,
+	ESPMaxDistance = 2500,
+}
+
+--// Helper Functions
+
+local function New(className, props, parent)
+	local obj = Instance.new(className)
+	for k, v in pairs(props or {}) do
+		obj[k] = v
+	end
+	if parent then
+		obj.Parent = parent
+	end
+	return obj
+end
+
+local function GetChar(plr)
+	plr = plr or LocalPlayer
+	return plr.Character
+end
+
+local function GetRoot(plr)
+	local char = GetChar(plr)
+	return char and char:FindFirstChild("HumanoidRootPart")
+end
+
+local function IsEnemyForVisuals(plr)
+	if not plr or plr == LocalPlayer then return false end
+	if State.TeamCheck and LocalPlayer.Team and plr.Team and LocalPlayer.Team == plr.Team then return false end
+	return true
+end
+
+--// GUI Overlays
+
+local Gui = New("ScreenGui", {
+	Name = "NEVERBLOX_ESP_ONLY",
+	ResetOnSpawn = false,
+	IgnoreGuiInset = true,
+	DisplayOrder = 20,
+	ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+}, PlayerGui)
+
+local Overlay = New("Frame", {
+	Name = "Overlay",
+	Size = UDim2.fromScale(1, 1),
+	BackgroundTransparency = 1,
+	ZIndex = 1
+}, Gui)
+
+--// ESP Logic
+
+local ESPCache = {}
+
+local function ClearESP(plr)
+	local data = ESPCache[plr]
+	if not data then return end
+
+	for _, obj in pairs(data.Objects) do
+		if obj and obj.Destroy then
+			obj:Destroy()
+		end
+	end
+	ESPCache[plr] = nil
+end
+
+local function CreateESP(plr)
+	if plr == LocalPlayer or ESPCache[plr] then return end
+
+	local box = New("Frame", { BackgroundTransparency = 1, Visible = false, ZIndex = 8 }, Overlay)
+	local boxStroke = New("UIStroke", { Color = Theme.Accent, Transparency = 0.05, Thickness = 1 }, box)
+
+	local corners = {}
+	for i = 1, 8 do
+		corners[i] = New("Frame", { BackgroundColor3 = Theme.Accent, BorderSizePixel = 0, Visible = false, ZIndex = 9 }, Overlay)
+	end
+
+	local name = New("TextLabel", {
+		BackgroundTransparency = 1, Text = "", TextColor3 = Theme.Text,
+		TextStrokeTransparency = 0.1, TextSize = 13, Font = Enum.Font.GothamBold,
+		Visible = false, ZIndex = 11
+	}, Overlay)
+
+	local bottom = New("TextLabel", {
+		BackgroundTransparency = 1, Text = "", TextColor3 = Theme.Text,
+		TextStrokeTransparency = 0.1, TextSize = 12, Font = Enum.Font.Gotham,
+		Visible = false, ZIndex = 11
+	}, Overlay)
+
+	local hpBack = New("Frame", { BackgroundColor3 = Color3.fromRGB(0, 0, 0), BorderSizePixel = 0, Visible = false, ZIndex = 8 }, Overlay)
+	local hpFill = New("Frame", { BackgroundColor3 = Theme.Green, BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), ZIndex = 9 }, hpBack)
+
+	local highlight = New("Highlight", {
+		Enabled = false, FillColor = Theme.Accent, OutlineColor = Color3.fromRGB(230, 245, 255),
+		FillTransparency = 0.78, OutlineTransparency = 0.08
+	}, Gui)
+
+	local objects = {box, boxStroke, name, bottom, hpBack, hpFill, highlight}
+	for _, c in ipairs(corners) do table.insert(objects, c) end
+
+	ESPCache[plr] = {
+		Objects = objects, Box = box, BoxStroke = boxStroke, Corners = corners,
+		Name = name, Bottom = bottom, HPBack = hpBack, HPFill = hpFill, Highlight = highlight
+	}
+end
+
+local function HideESP(data)
+	data.Box.Visible = false
+	data.Name.Visible = false
+	data.Bottom.Visible = false
+	data.HPBack.Visible = false
+	data.Highlight.Enabled = false
+	for _, c in ipairs(data.Corners) do c.Visible = false end
+end
+
+local function GetBox2D(char)
+	local root = char:FindFirstChild("HumanoidRootPart")
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not root or not hum then return nil end
+
+	local topWorld = root.Position + Vector3.new(0, 3.2, 0)
+	local bottomWorld = root.Position - Vector3.new(0, 3.2, 0)
+
+	local top, topOn = Camera:WorldToViewportPoint(topWorld)
+	local bottom, bottomOn = Camera:WorldToViewportPoint(bottomWorld)
+
+	if top.Z <= 0 or bottom.Z <= 0 then return nil end
+	if not topOn and not bottomOn then return nil end
+
+	local h = math.abs(bottom.Y - top.Y)
+	local w = h * 0.45
+
+	local x1, x2 = bottom.X - w / 2, bottom.X + w / 2
+	local y1, y2 = top.Y, bottom.Y
+
+	return x1, y1, x2, y2
+end
+
+local function SetCornerBox(corners, x, y, w, h, color)
+	local len = math.clamp(math.min(w, h) * 0.25, 8, 22)
+	local thick = 2
+	local p = {
+		{x, y, len, thick}, {x, y, thick, len},
+		{x + w - len, y, len, thick}, {x + w - thick, y, thick, len},
+		{x, y + h - thick, len, thick}, {x, y + h - len, thick, len},
+		{x + w - len, y + h - thick, len, thick}, {x + w - thick, y + h - len, thick, len}
+	}
+
+	for i, c in ipairs(corners) do
+		c.Visible = true
+		c.Position = UDim2.fromOffset(p[i][1], p[i][2])
+		c.Size = UDim2.fromOffset(p[i][3], p[i][4])
+		c.BackgroundColor3 = color
+	end
+end
+
+local function UpdateESP()
+	for _, plr in ipairs(Players:GetPlayers()) do
+		if plr ~= LocalPlayer then
+			CreateESP(plr)
+			local data = ESPCache[plr]
+			local char = plr.Character
+			local root = char and char:FindFirstChild("HumanoidRootPart")
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local myRoot = GetRoot(LocalPlayer)
+
+			if not data or not char or not root or not hum or hum.Health <= 0 or not myRoot then
+				if data then HideESP(data) end
+				continue
+			end
+
+			local distance = (root.Position - myRoot.Position).Magnitude
+
+			if not State.VisualsEnabled or not IsEnemyForVisuals(plr) or distance > State.ESPMaxDistance then
+				HideESP(data)
+				continue
+			end
+
+			local x1, y1, x2, y2 = GetBox2D(char)
+			if not x1 then
+				HideESP(data)
+				continue
+			end
+
+			local color = Theme.Accent
+			local w, h = x2 - x1, y2 - y1
+
+			data.Box.Visible = State.BoxESP and not State.CornerBox
+			data.Box.Position = UDim2.fromOffset(x1, y1)
+			data.Box.Size = UDim2.fromOffset(w, h)
+			data.BoxStroke.Color = color
+
+			for _, c in ipairs(data.Corners) do c.Visible = false end
+			if State.CornerBox then SetCornerBox(data.Corners, x1, y1, w, h, color) end
+
+			data.Highlight.Adornee = char
+			data.Highlight.Enabled = State.Chams or State.Glow
+			data.Highlight.FillColor = color
+			data.Highlight.OutlineColor = State.Glow and Theme.Accent or Color3.fromRGB(230, 245, 255)
+			data.Highlight.FillTransparency = State.Chams and 0.78 or 1
+			data.Highlight.OutlineTransparency = State.Glow and 0.08 or 1
+			data.Highlight.DepthMode = State.ChamsXRay and Enum.HighlightDepthMode.AlwaysOnTop or Enum.HighlightDepthMode.Occluded
+
+			local topParts = {}
+			local bottomParts = {}
+
+			if State.NameESP then table.insert(topParts, plr.Name) end
+			if State.DistanceESP then table.insert(bottomParts, math.floor(distance) .. " studs") end
+			if State.HealthESP then table.insert(bottomParts, "HP: " .. math.floor(hum.Health)) end
+
+			data.Name.Visible = #topParts > 0
+			data.Name.Text = table.concat(topParts, " | ")
+			data.Name.Position = UDim2.fromOffset(x1 - 40, y1 - 18)
+			data.Name.Size = UDim2.fromOffset(w + 80, 16)
+
+			data.Bottom.Visible = #bottomParts > 0
+			data.Bottom.Text = table.concat(bottomParts, " | ")
+			data.Bottom.Position = UDim2.fromOffset(x1 - 50, y2 + 2)
+			data.Bottom.Size = UDim2.fromOffset(w + 100, 16)
+
+			data.HPBack.Visible = State.HealthESP
+			data.HPBack.Position = UDim2.fromOffset(x1 - 7, y1)
+			data.HPBack.Size = UDim2.fromOffset(4, h)
+
+			local hp = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
+			data.HPFill.Size = UDim2.new(1, 0, hp, 0)
+			data.HPFill.Position = UDim2.new(0, 0, 1 - hp, 0)
+			data.HPFill.BackgroundColor3 = hp > 0.5 and Theme.Green or Theme.Red
+		end
+	end
+end
+
+Players.PlayerRemoving:Connect(ClearESP)
+
+--// Rayfield UI Implementation
+
+local Rayfield = loadstring(game:HttpGet('https://sirius.menu/rayfield'))()
+
+local Window = Rayfield:CreateWindow({
+	Name = "NEVERBLOX ESP",
+	LoadingTitle = "NEVERBLOX",
+	LoadingSubtitle = "ESP Only",
+	ConfigurationSaving = { Enabled = false },
+	Discord = { Enabled = false },
+	KeySystem = false,
+})
+
+local VisualsPage = Window:CreateTab("Visuals", 4483362458)
+
+local function AddToggle(key, title)
+	VisualsPage:CreateToggle({
+		Name = title,
+		CurrentValue = State[key] == true,
+		Flag = key,
+		Callback = function(v) State[key] = v end,
+	})
+end
+
+VisualsPage:CreateSection("Player ESP")
+AddToggle("VisualsEnabled", "Enabled")
+AddToggle("TeamCheck", "Team Check")
+AddToggle("BoxESP", "Box")
+AddToggle("CornerBox", "Corner Box")
+AddToggle("NameESP", "Name")
+AddToggle("HealthESP", "Health")
+AddToggle("DistanceESP", "Distance")
+
+VisualsPage:CreateSlider({
+	Name = "Max Distance",
+	Range = {100, 5000},
+	Increment = 50,
+	CurrentValue = 2500,
+	Flag = "ESPMaxDistance",
+	Callback = function(v) State.ESPMaxDistance = v end,
+})
+
+VisualsPage:CreateSection("Chams / Glow")
+AddToggle("Chams", "Chams")
+AddToggle("Glow", "Glow")
+AddToggle("ChamsXRay", "X-Ray")
+
+VisualsPage:CreateSection("System")
+VisualsPage:CreateButton({
+	Name = "Unload Script",
+	Callback = function()
+		State.VisualsEnabled = false
+		for _, plr in ipairs(Players:GetPlayers()) do ClearESP(plr) end
+		Rayfield:Destroy()
+		Gui:Destroy()
+	end
+})
+
+--// Runtime Loop
+local RuntimeConnection = RunService.RenderStepped:Connect(function()
+    -- Check if Gui was destroyed (Unloaded)
+    if not Gui or not Gui.Parent then 
+        RuntimeConnection:Disconnect() 
+        return 
+    end
+    
+	Camera = workspace.CurrentCamera or Camera
+	UpdateESP()
+end)
